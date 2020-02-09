@@ -1,5 +1,7 @@
 # Functions for the creation of complex neural networks
 
+from model_analysis import *
+
 def linear_struct(in_shape,conv_layers,FC_layers,*args,**kwargs):
     from keras.layers import Input
     # First select the correct form of the input be either obtaining the correct vector or using the im_type keyword.
@@ -379,9 +381,9 @@ def random_struct(inputs,input_types,stride_options,convolution_lists,pooling_op
 
 # EXAMPLE 2
 
-''' Chooses from 1.2-1.5M possible options
+#Chooses from 1.2-1.5M possible options
 
-from random import choice
+'''from random import choice
 
 inputs=[150,250,350]
 input_types=["color","grayscale"]
@@ -395,20 +397,108 @@ batch_no_or_yes=["BN","No_BN"]
 dropout_options=[None,0.2,0.3,0.5]
 classes=[None,2,4,8,16,32]
 feature_extracts=["tensor","max","average"]
-
 model_dict={}
 
-for i in range(20):
+for i in range(50):
     model_dict["model_"+str(i+1)]=random_struct(inputs,input_types,stride_options,convolution_lists,pooling_options,pooling_types,
-                  fc_options,batch_no_or_yes, dropout_options,classes,feature_extracts,"summary",annotation="_test_net_"+str(i+1))
-    print()'''
-
-
-
-
-
+                  fc_options,batch_no_or_yes, dropout_options,classes,feature_extracts,annotation="_test_net_"+str(i+1))
+for m in model_dict:
+    model_dict[m].name=m
+    model_info(model_dict[m],"diagram","display_tensors","display_names","save_summaries",save_dir="C:\\Users\\the_n\\OneDrive\\Python Programs\\Working Branch\\Random Models")'''
 
 # BRANCH STRUCTURE
+from keras.layers import concatenate, Input, Lambda
+from keras.models import Model
+from tensorflow import image, convert_to_tensor
+
+# RESIZE LAYER
+
+def branched_struct(in_size,branches,*args,**kwargs):
+    if "annotate_branches" in kwargs:
+        annotation=kwargs["annotate_branches"]
+    else:
+        annotation=""
+
+    if "fix_mismatches" in args:
+        r_count=1
+    # Create input for all branches
+    if len(in_size)==2 and (in_size.__class__==tuple or in_size.__class__==tuple):
+        common_input = Input(shape=(in_size[0], in_size[1], 1,), name="Input" + "-" + annotation)
+    elif len(in_size)==3 and (in_size.__class__==tuple or in_size.__class__==tuple):
+        common_input = Input(shape=(in_size[0], in_size[1], in_size[2],), name="Input" + "-" + annotation)
+    else:
+        print("Input not of valid shape!")
+
+    # create dictionary of branches to add to. This tracks the connecting layer for all branches and
+    # is initially set to the common_input
+    branch_dict = {"branch_" + str(b + 1) + annotation:common_input for b in range(len(branches))}
+
+    # Resize branch input to match branch inputs if necessary:
+    for b in range(len(branches)):
+        if list(branches[b].input.shape)!= [None]+list(in_size):
+            if "fix_mismatches" not in args:
+                print("ERROR: input_mismatch in", branches[b].name)
+                return None
+            else:
+                branch_dict["branch_" + str(b + 1) + annotation]=Lambda(lambda x: image.resize(x,branches[b].input.shape[1:-1],method=image.ResizeMethod.BICUBIC,preserve_aspect_ratio=False),name="Resize_"+str(r_count)+annotation)(common_input)
+                branch_dict["branch_" + str(b + 1) + annotation]=branches[b](branch_dict["branch_" + str(b + 1) + annotation])
+                r_count+=1
+        else:
+            branch_dict["branch_" + str(b + 1) + annotation]=branches[b](branch_dict["branch_" + str(b + 1) + annotation])
+
+    # Check if there is a common output
+    out_shapes=[list(branch_dict["branch_" + str(i) + annotation].shape[:-1]) for i in range(1, len(branch_dict) + 1)]
+    out_test=False not in [out_shapes[i]==out_shapes[0] for i in range(1,len(out_shapes))]
+    # If the test dor a common output fails, we need to resize the outputs. This can be done by resizing or padding
+    if out_test==False:
+        if "fix_mismatches" not in args:
+            print("ERROR: Branch outputs not matching.")
+            return None
+        else:
+            if "out_shape" not in kwargs:
+                print("ERROR: out_shape keyword must be given")
+                return None
+            else:
+                out_shape=convert_to_tensor(kwargs["out_shape"])
+                # START HERE!
+                for b in branch_dict:
+                    if list(branch_dict[b].shape)[1:-1] != list(out_shape):    # If the output shape is not as expected, resize the output to fit (later add padding options)
+                        branch_dict[b] = Lambda(lambda x: image.resize(branch_dict[b],out_shape, method=image.ResizeMethod.BICUBIC, preserve_aspect_ratio=False),name="Resize_"+str(r_count)+annotation)(branch_dict[b])
+                        r_count+=1
+                    else:
+                        pass
+                output = concatenate([branch_dict[b] for b in branch_dict], axis=-1)
+    else:
+        output=concatenate([branch_dict[b] for b in branch_dict],axis=-1)
+
+    full_model = Model(inputs=common_input, outputs=[output],name="Branch_model" + annotation,)
+    return full_model
 
 
+branch1=linear_struct((50,50),[[20,3]],None,annotation="_branch_1")
+branch2=linear_struct((100,100),[[10,5],[20,3]],None,annotation= "_branch_2")
+branch3=linear_struct((100,100),[[5,3],[1,3]],None,annotation="_branch_3")
+branch4=linear_struct((150,150),[[20,3],[20,3],[20,3]],None,annotation="_branch_4")
+branch5=linear_struct((75,75),[[20,3]],None,annotation="_branch_5")
+branches=[branch1,branch2,branch3,branch4,branch5]
+for b in branches:
+    #print(b.summary())
+    pass
 
+test_model=branched_struct((100,100,1),branches,"fix_mismatches",out_shape=(23,23))
+model_info(test_model,"diagram","display_tensors","display_names","save_summaries")
+for b in branches:
+    model_info(b, "diagram", "display_tensors", "display_names","save_summaries")
+
+# GRAPH STRUCTURE
+
+'''Any network can be constructed though a combination of serial (linear_struct) and parallel (branch_struct), but it
+might be tedious to define them all seperately. Instead we wish to define blocks and how they are connected to one another.
+Since we are working strictly with FFNN, we have one single input from which the shape of all the subsequent blocks are determined.
+We also need a check to tell us when the cumulative pooling factors is unworkable.
+
+
+'''
+
+def graph_structure(nodes,edges):
+    pass
